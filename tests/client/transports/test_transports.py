@@ -3,6 +3,7 @@ import ssl
 from collections.abc import AsyncIterator
 from ssl import VerifyMode
 from typing import Any, cast
+from unittest.mock import patch
 
 import httpx2
 import pytest
@@ -15,6 +16,7 @@ from fastmcp.client.transports import (
     SSETransport,
     StreamableHttpTransport,
 )
+from fastmcp.client.transports.base import TransportOptions
 
 
 class BasicTransport(ClientTransport):
@@ -291,3 +293,114 @@ class TestSSLVerify:
                 httpx_client_factory=factory,
                 verify=False,
             )
+
+
+class TestForwardedHeaderCasePrecedence:
+    """Configured transport headers must win over forwarded headers regardless of case.
+
+    get_http_headers returns lowercase keys (e.g. "authorization") while the
+    transport may be configured with mixed-case headers (e.g. "Authorization").
+    Before the fix, both ended up in the merged dict because the dict merge
+    compared keys literally, so the backend received two header lines for the
+    same logical header. The configured header must always take precedence.
+    """
+
+    def _captured_headers_factory(self, captured: dict) -> McpHttpClientFactory:
+        """Return an httpx_client_factory that records the headers it received."""
+
+        def factory(
+            headers: dict[str, str] | None = None,
+            auth: httpx2.Auth | None = None,
+            follow_redirects: bool = True,
+            **kwargs: Any,
+        ) -> httpx2.AsyncClient:
+            captured["headers"] = dict(headers or {})
+            return httpx2.AsyncClient(headers=headers or {})
+
+        return cast(McpHttpClientFactory, factory)
+
+    async def test_streamable_http_configured_header_wins_over_forwarded_lowercase(
+        self,
+    ):
+        """When Authorization (mixed case) is configured, the forwarded
+        authorization (lowercase) must not appear alongside it."""
+        captured: dict = {}
+        transport = StreamableHttpTransport(
+            "https://example.com/mcp",
+            headers={"Authorization": "Bearer backend"},
+            httpx_client_factory=self._captured_headers_factory(captured),
+        )
+        options = TransportOptions(forward_incoming_headers=True)
+
+        with patch(
+            "fastmcp.client.transports.http.get_http_headers",
+            return_value={"authorization": "Bearer caller"},
+        ):
+            try:
+                async with transport.connect_session(transport_options=options):
+                    pass
+            except Exception:
+                pass  # connection will fail; we only care about the headers built
+
+        assert captured.get("headers") is not None
+        headers = captured["headers"]
+        # The forwarded lowercase key must not appear alongside the configured key
+        assert "authorization" not in headers or headers.get("authorization") == headers.get(
+            "Authorization"
+        ), "Both authorization and Authorization were present with different values"
+        # The configured value must be present (under whichever key the transport uses)
+        header_values = {v for v in headers.values()}
+        assert "Bearer backend" in header_values
+        assert "Bearer caller" not in header_values
+
+    async def test_streamable_http_configured_header_wins_exact_case_match(self):
+        """When both sides use lowercase, the configured header still wins."""
+        captured: dict = {}
+        transport = StreamableHttpTransport(
+            "https://example.com/mcp",
+            headers={"authorization": "Bearer backend"},
+            httpx_client_factory=self._captured_headers_factory(captured),
+        )
+        options = TransportOptions(forward_incoming_headers=True)
+
+        with patch(
+            "fastmcp.client.transports.http.get_http_headers",
+            return_value={"authorization": "Bearer caller"},
+        ):
+            try:
+                async with transport.connect_session(transport_options=options):
+                    pass
+            except Exception:
+                pass
+
+        assert captured.get("headers") is not None
+        headers = captured["headers"]
+        header_values = list(headers.values())
+        assert "Bearer backend" in header_values
+        assert "Bearer caller" not in header_values
+
+    async def test_streamable_http_forwarded_header_included_when_not_overridden(self):
+        """A forwarded header that is not overridden by a configured header is kept."""
+        captured: dict = {}
+        transport = StreamableHttpTransport(
+            "https://example.com/mcp",
+            headers={"X-Backend-Token": "backend-only"},
+            httpx_client_factory=self._captured_headers_factory(captured),
+        )
+        options = TransportOptions(forward_incoming_headers=True)
+
+        with patch(
+            "fastmcp.client.transports.http.get_http_headers",
+            return_value={"authorization": "Bearer caller"},
+        ):
+            try:
+                async with transport.connect_session(transport_options=options):
+                    pass
+            except Exception:
+                pass
+
+        assert captured.get("headers") is not None
+        headers = captured["headers"]
+        header_values = list(headers.values())
+        assert "Bearer caller" in header_values
+        assert "backend-only" in header_values

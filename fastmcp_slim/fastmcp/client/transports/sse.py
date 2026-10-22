@@ -143,9 +143,17 @@ class SSETransport(ClientTransport):
         # plain Client used inside a server tool handler doesn't accidentally
         # leak the caller's credentials to an unrelated remote server.
         if options.forward_incoming_headers:
-            client_kwargs["headers"] = (
-                get_http_headers(include={"authorization"}) | self.headers
-            )
+            # `get_http_headers` returns lowercase keys; `self.headers` may use
+            # any capitalisation. Drop forwarded headers whose lowercase name
+            # matches a configured header so that `self.headers` always wins,
+            # regardless of whether the names match in case.
+            configured_lower = {k.lower() for k in self.headers}
+            forwarded = {
+                k: v
+                for k, v in get_http_headers(include={"authorization"}).items()
+                if k not in configured_lower
+            }
+            client_kwargs["headers"] = forwarded | self.headers
         else:
             client_kwargs["headers"] = dict(self.headers)
 
