@@ -92,6 +92,44 @@ class TestClerkProvider:
             == f"https://{CLERK_DOMAIN}/oauth/authorize"
         )
 
+    def test_domain_with_https_scheme_not_doubled(self, memory_storage: MemoryStore):
+        """Test that a domain already containing https:// does not produce https://https://."""
+        provider = ClerkProvider(
+            domain=f"https://{CLERK_DOMAIN}",
+            client_id="clerk-client-id",
+            client_secret="clerk-client-secret",
+            base_url="https://myserver.com",
+            jwt_signing_key="test-secret",
+            client_storage=memory_storage,
+        )
+
+        assert (
+            provider._upstream_authorization_endpoint
+            == f"https://{CLERK_DOMAIN}/oauth/authorize"
+        )
+        assert (
+            provider._upstream_token_endpoint
+            == f"https://{CLERK_DOMAIN}/oauth/token"
+        )
+
+    def test_domain_with_https_scheme_and_trailing_slash(
+        self, memory_storage: MemoryStore
+    ):
+        """Test that https://domain/ (with trailing slash) is normalized correctly."""
+        provider = ClerkProvider(
+            domain=f"https://{CLERK_DOMAIN}/",
+            client_id="clerk-client-id",
+            client_secret="clerk-client-secret",
+            base_url="https://myserver.com",
+            jwt_signing_key="test-secret",
+            client_storage=memory_storage,
+        )
+
+        assert (
+            provider._upstream_authorization_endpoint
+            == f"https://{CLERK_DOMAIN}/oauth/authorize"
+        )
+
     def test_default_scopes(self, memory_storage: MemoryStore):
         """Test that default required scopes are openid, email, profile."""
         provider = ClerkProvider(
@@ -199,6 +237,25 @@ class TestClerkProvider:
 
 class TestClerkTokenVerifier:
     """Test ClerkTokenVerifier.verify_token() using introspection + userinfo."""
+
+    def test_domain_with_scheme_stored_correctly(self):
+        """ClerkTokenVerifier normalizes a domain passed with https:// scheme."""
+        verifier = ClerkTokenVerifier(
+            domain=f"https://{CLERK_DOMAIN}",
+            client_id="clerk-client-id",
+        )
+        assert verifier._userinfo_url == f"https://{CLERK_DOMAIN}/oauth/userinfo"
+        assert verifier._introspection_url == f"https://{CLERK_DOMAIN}/oauth/token_info"
+        assert not verifier._userinfo_url.startswith("https://https://")
+
+    def test_domain_without_scheme_stored_correctly(self):
+        """ClerkTokenVerifier adds https:// when domain has no scheme."""
+        verifier = ClerkTokenVerifier(
+            domain=CLERK_DOMAIN,
+            client_id="clerk-client-id",
+        )
+        assert verifier._userinfo_url == f"https://{CLERK_DOMAIN}/oauth/userinfo"
+        assert verifier._introspection_url == f"https://{CLERK_DOMAIN}/oauth/token_info"
 
     async def test_valid_token_basic(self, httpx_mock: HTTPXMock):
         """A valid token returns an AccessToken with user claims from userinfo."""

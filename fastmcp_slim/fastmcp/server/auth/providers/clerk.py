@@ -82,14 +82,17 @@ class ClerkTokenVerifier(TokenVerifier):
                 lifecycle. When None (default), a fresh client is created per call.
         """
         super().__init__(required_scopes=required_scopes)
-        self.domain = domain.rstrip("/")
+        domain = domain.rstrip("/")
+        if not domain.startswith(("http://", "https://")):
+            domain = f"https://{domain}"
+        self.domain = domain
         self._client_id = client_id
         self._client_secret = client_secret
         self.timeout_seconds = timeout_seconds
         self._http_client = http_client
 
-        self._userinfo_url = f"https://{self.domain}/oauth/userinfo"
-        self._introspection_url = f"https://{self.domain}/oauth/token_info"
+        self._userinfo_url = f"{self.domain}/oauth/userinfo"
+        self._introspection_url = f"{self.domain}/oauth/token_info"
 
     async def verify_token(self, token: str) -> AccessToken | None:
         """Verify a Clerk OAuth token via introspection and userinfo.
@@ -351,6 +354,8 @@ class ClerkProvider(OAuthProxy):
                 treat a token as expired, refreshing early to avoid races. Defaults to 0.
         """
         domain = domain.rstrip("/")
+        if not domain.startswith(("http://", "https://")):
+            domain = f"https://{domain}"
 
         required_scopes_final = (
             parse_scopes(required_scopes)
@@ -376,8 +381,8 @@ class ClerkProvider(OAuthProxy):
         )
 
         super().__init__(
-            upstream_authorization_endpoint=f"https://{domain}/oauth/authorize",
-            upstream_token_endpoint=f"https://{domain}/oauth/token",
+            upstream_authorization_endpoint=f"{domain}/oauth/authorize",
+            upstream_token_endpoint=f"{domain}/oauth/token",
             upstream_client_id=client_id,
             upstream_client_secret=client_secret,
             token_verifier=token_verifier,
