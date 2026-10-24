@@ -239,23 +239,44 @@ class TestClerkTokenVerifier:
     """Test ClerkTokenVerifier.verify_token() using introspection + userinfo."""
 
     def test_domain_with_scheme_stored_correctly(self):
-        """ClerkTokenVerifier normalizes a domain passed with https:// scheme."""
+        """ClerkTokenVerifier strips https:// from domain; self.domain stays a bare host."""
         verifier = ClerkTokenVerifier(
             domain=f"https://{CLERK_DOMAIN}",
             client_id="clerk-client-id",
         )
+        # Public attribute remains a bare host (no scheme change for callers)
+        assert verifier.domain == CLERK_DOMAIN
         assert verifier._userinfo_url == f"https://{CLERK_DOMAIN}/oauth/userinfo"
         assert verifier._introspection_url == f"https://{CLERK_DOMAIN}/oauth/token_info"
         assert not verifier._userinfo_url.startswith("https://https://")
 
     def test_domain_without_scheme_stored_correctly(self):
-        """ClerkTokenVerifier adds https:// when domain has no scheme."""
+        """ClerkTokenVerifier stores a bare host unchanged."""
         verifier = ClerkTokenVerifier(
             domain=CLERK_DOMAIN,
             client_id="clerk-client-id",
         )
+        assert verifier.domain == CLERK_DOMAIN
         assert verifier._userinfo_url == f"https://{CLERK_DOMAIN}/oauth/userinfo"
         assert verifier._introspection_url == f"https://{CLERK_DOMAIN}/oauth/token_info"
+
+    def test_domain_https_uppercase_scheme_stripped(self):
+        """ClerkTokenVerifier handles HTTPS:// (uppercase) without doubling the scheme."""
+        verifier = ClerkTokenVerifier(
+            domain=f"HTTPS://{CLERK_DOMAIN}",
+            client_id="clerk-client-id",
+        )
+        assert verifier.domain == CLERK_DOMAIN
+        assert not verifier._userinfo_url.startswith("https://HTTPS://")
+
+    def test_domain_http_scheme_rejected(self):
+        """ClerkTokenVerifier raises ValueError for http:// domains."""
+        import pytest
+        with pytest.raises(ValueError, match="http://"):
+            ClerkTokenVerifier(
+                domain=f"http://{CLERK_DOMAIN}",
+                client_id="clerk-client-id",
+            )
 
     async def test_valid_token_basic(self, httpx_mock: HTTPXMock):
         """A valid token returns an AccessToken with user claims from userinfo."""
