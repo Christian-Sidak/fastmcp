@@ -130,6 +130,50 @@ class TestClerkProvider:
             == f"https://{CLERK_DOMAIN}/oauth/authorize"
         )
 
+    def test_domain_uppercase_https_scheme_stripped(self, memory_storage: MemoryStore):
+        """Test that HTTPS:// (uppercase) is stripped and produces correct endpoints."""
+        provider = ClerkProvider(
+            domain=f"HTTPS://{CLERK_DOMAIN}",
+            client_id="clerk-client-id",
+            client_secret="clerk-client-secret",
+            base_url="https://myserver.com",
+            jwt_signing_key="test-secret",
+            client_storage=memory_storage,
+        )
+
+        assert (
+            provider._upstream_authorization_endpoint
+            == f"https://{CLERK_DOMAIN}/oauth/authorize"
+        )
+        assert (
+            provider._upstream_token_endpoint
+            == f"https://{CLERK_DOMAIN}/oauth/token"
+        )
+
+    def test_domain_http_scheme_rejected(self, memory_storage: MemoryStore):
+        """Test that http:// is rejected by ClerkProvider."""
+        with pytest.raises(ValueError, match="http://"):
+            ClerkProvider(
+                domain=f"http://{CLERK_DOMAIN}",
+                client_id="clerk-client-id",
+                client_secret="clerk-client-secret",
+                base_url="https://myserver.com",
+                jwt_signing_key="test-secret",
+                client_storage=memory_storage,
+            )
+
+    def test_domain_with_path_rejected(self, memory_storage: MemoryStore):
+        """Test that a domain containing a path component is rejected."""
+        with pytest.raises(ValueError, match="path"):
+            ClerkProvider(
+                domain=f"https://{CLERK_DOMAIN}/some/path",
+                client_id="clerk-client-id",
+                client_secret="clerk-client-secret",
+                base_url="https://myserver.com",
+                jwt_signing_key="test-secret",
+                client_storage=memory_storage,
+            )
+
     def test_default_scopes(self, memory_storage: MemoryStore):
         """Test that default required scopes are openid, email, profile."""
         provider = ClerkProvider(
@@ -275,6 +319,14 @@ class TestClerkTokenVerifier:
         with pytest.raises(ValueError, match="http://"):
             ClerkTokenVerifier(
                 domain=f"http://{CLERK_DOMAIN}",
+                client_id="clerk-client-id",
+            )
+
+    def test_domain_with_path_rejected(self):
+        """ClerkTokenVerifier raises ValueError when domain contains a path component."""
+        with pytest.raises(ValueError, match="path"):
+            ClerkTokenVerifier(
+                domain=f"https://{CLERK_DOMAIN}/some/path",
                 client_id="clerk-client-id",
             )
 

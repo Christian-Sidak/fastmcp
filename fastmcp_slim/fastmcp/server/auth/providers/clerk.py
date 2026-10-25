@@ -94,6 +94,11 @@ class ClerkTokenVerifier(TokenVerifier):
                 "ClerkTokenVerifier: 'http://' domains are not allowed; "
                 "pass a bare host or an 'https://' URL."
             )
+        if "/" in domain:
+            raise ValueError(
+                "ClerkTokenVerifier: 'domain' must be a bare host with no path component "
+                f"(got '{domain}'). Strip any trailing path before passing it in."
+            )
         self.domain = domain
         self._client_id = client_id
         self._client_secret = client_secret
@@ -372,6 +377,11 @@ class ClerkProvider(OAuthProxy):
             raise ValueError(
                 "ClerkProvider: 'http://' domains are not allowed; "
                 "pass a bare host or an 'https://' URL."
+            )
+        if "/" in domain:
+            raise ValueError(
+                "ClerkProvider: 'domain' must be a bare host with no path component "
+                f"(got '{domain}'). Strip any trailing path before passing it in."
             )
 
         required_scopes_final = (
