@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from unittest.mock import patch
 
 import pytest
@@ -10,7 +11,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import Span, SpanKind, StatusCode
 
 import fastmcp
-from fastmcp import Client, FastMCP
+from fastmcp import Client, Context, FastMCP
 from fastmcp.exceptions import NotFoundError, ToolError
 from fastmcp.server.auth import AccessToken
 from fastmcp.server.middleware.middleware import CallNext, Middleware, MiddlewareContext
@@ -769,3 +770,128 @@ class TestProtocolVersionAttribute:
         version = seam_span.attributes.get("mcp.protocol.version")
         assert isinstance(version, str)
         assert version
+
+
+class TestNestedCallToolSpans:
+    """A tool that calls ctx.fastmcp.call_tool() must produce a span for each call.
+
+    Before the fix, the outer tool's seam span remained the active seam span
+    inside the tool body, so the nested call_tool's server_span enriched the
+    outer span instead of opening a new child span. The outer span ended up
+    named after the inner tool and the outer tool had no span at all.
+
+    Issue: https://github.com/jlowin/fastmcp/issues/6009
+    """
+
+    async def test_nested_call_tool_emits_both_spans(
+        self, trace_exporter: InMemorySpanExporter
+    ):
+        """Outer tool calling ctx.fastmcp.call_tool() produces two SERVER spans."""
+        mcp = FastMCP("test-server")
+
+        @mcp.tool
+        def boom() -> str:
+            raise ToolError("boom")
+
+        @mcp.tool
+        async def outer(ctx: Context) -> str:
+            with suppress(ToolError):
+                await ctx.fastmcp.call_tool("boom", {})
+            return "done"
+
+        async with Client(mcp) as client:
+            await client.call_tool("outer", {})
+
+        spans = trace_exporter.get_finished_spans()
+        tool_call_server_spans = [
+            s
+            for s in spans
+            if s.kind == SpanKind.SERVER
+            and s.attributes is not None
+            and s.attributes.get("mcp.method.name") == "tools/call"
+        ]
+
+        span_names = {s.name for s in tool_call_server_spans}
+        assert "tools/call outer" in span_names, (
+            f"Missing 'tools/call outer' span; found: {span_names}"
+        )
+        assert "tools/call boom" in span_names, (
+            f"Missing 'tools/call boom' span; found: {span_names}"
+        )
+        assert len(tool_call_server_spans) == 2
+
+    async def test_outer_span_status_unset_inner_span_status_error(
+        self, trace_exporter: InMemorySpanExporter
+    ):
+        """Outer span is UNSET (success); inner boom span is ERROR."""
+        mcp = FastMCP("test-server")
+
+        @mcp.tool
+        def boom() -> str:
+            raise ToolError("boom")
+
+        @mcp.tool
+        async def outer(ctx: Context) -> str:
+            with suppress(ToolError):
+                await ctx.fastmcp.call_tool("boom", {})
+            return "done"
+
+        async with Client(mcp) as client:
+            await client.call_tool("outer", {})
+
+        spans = trace_exporter.get_finished_spans()
+        tool_call_server_spans = {
+            s.name: s
+            for s in spans
+            if s.kind == SpanKind.SERVER
+            and s.attributes is not None
+            and s.attributes.get("mcp.method.name") == "tools/call"
+        }
+
+        outer_span = tool_call_server_spans.get("tools/call outer")
+        boom_span = tool_call_server_spans.get("tools/call boom")
+        assert outer_span is not None
+        assert boom_span is not None
+
+        assert outer_span.status.status_code == StatusCode.UNSET
+        assert boom_span.status.status_code == StatusCode.ERROR
+
+    async def test_nested_call_tool_span_is_child_of_outer(
+        self, trace_exporter: InMemorySpanExporter
+    ):
+        """The inner tool's span must be a descendant of the outer tool's span."""
+        mcp = FastMCP("test-server")
+
+        @mcp.tool
+        def inner() -> str:
+            return "inner result"
+
+        @mcp.tool
+        async def outer(ctx: Context) -> str:
+            await ctx.fastmcp.call_tool("inner", {})
+            return "outer result"
+
+        async with Client(mcp) as client:
+            await client.call_tool("outer", {})
+
+        spans = trace_exporter.get_finished_spans()
+        tool_call_server_spans = {
+            s.name: s
+            for s in spans
+            if s.kind == SpanKind.SERVER
+            and s.attributes is not None
+            and s.attributes.get("mcp.method.name") == "tools/call"
+        }
+
+        outer_span = tool_call_server_spans.get("tools/call outer")
+        inner_span = tool_call_server_spans.get("tools/call inner")
+        assert outer_span is not None
+        assert inner_span is not None
+
+        assert outer_span.context is not None
+        assert inner_span.context is not None
+        # All spans share a trace
+        assert outer_span.context.trace_id == inner_span.context.trace_id
+        # The inner span descends from the outer span
+        assert inner_span.parent is not None
+        assert inner_span.parent.span_id == outer_span.context.span_id
