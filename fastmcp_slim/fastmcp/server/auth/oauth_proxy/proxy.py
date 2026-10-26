@@ -799,6 +799,13 @@ class OAuthProxy(OAuthProvider, ConsentMixin):
                 that would make token validation fail for clients following the
                 RFC 9728 protected-resource metadata.
         """
+        # Normalize trailing slash so "/mcp" and "/mcp/" are treated identically.
+        # _get_resource_url builds the URL by stripping the leading slash from the
+        # suffix, but a trailing slash on the path would survive and produce a
+        # different AnyHttpUrl string, causing a false-positive conflict error.
+        if mcp_path:
+            mcp_path = mcp_path.rstrip("/") or "/"
+
         new_resource_url = self._get_resource_url(mcp_path)
 
         # Guard against silent inconsistency: if the resource URL is already
@@ -806,6 +813,13 @@ class OAuthProxy(OAuthProvider, ConsentMixin):
         # get_well_known_routes() call would change it to a different URL, the
         # protected-resource metadata and the token endpoint would validate
         # against different URLs. Fail fast with a clear message instead.
+        #
+        # This guard lives on OAuthProxy rather than the AuthProvider base class
+        # because only OAuthProxy binds a JWT issuer/audience to the resource URL
+        # at set_mcp_path() time. A silent overwrite on the base class is harmless
+        # for RemoteAuthProvider and plain OAuthProvider (they do not embed the
+        # audience in a signing key that is fixed at initialization); for OAuthProxy
+        # it would cause issued JWTs to carry the wrong audience and fail validation.
         if (
             self._resource_url is not None
             and new_resource_url is not None
