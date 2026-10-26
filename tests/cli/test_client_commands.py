@@ -168,14 +168,21 @@ class TestCoerceValue:
                 },
                 [3, 4],
             ),
-            # plain integer in a non-string union is JSON-decoded (int)
-            ("42", {"anyOf": [{"type": "integer"}, {"type": "array"}]}, 42),
+            # plain integer in a non-string union: only arrays/objects are
+            # JSON-parsed, so the scalar falls back to the raw string
+            ("42", {"anyOf": [{"type": "integer"}, {"type": "array"}]}, "42"),
         ],
     )
     def test_non_string_union_parses_json(self, raw, schema, expected):
-        """Unions with no string branch parse the value as JSON."""
+        """Unions with no string branch parse arrays/objects as JSON."""
         result = coerce_value(raw, schema)
         assert result == expected
+
+    def test_non_string_union_null_not_accepted_when_not_nullable(self):
+        """``null`` in a non-nullable union must not silently return None."""
+        schema = {"anyOf": [{"type": "integer"}, {"type": "array"}]}
+        result = coerce_value("null", schema)
+        assert result is not None
 
     def test_non_string_union_falls_back_to_string_on_invalid_json(self):
         """When JSON parsing fails for a non-string union, the raw string is returned."""

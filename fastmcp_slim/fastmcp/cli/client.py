@@ -376,11 +376,16 @@ def coerce_value(raw: str, schema: dict[str, Any]) -> Any:
     # For anyOf unions with multiple non-null branches (e.g. ``int | list[int]``),
     # try JSON parsing when no branch accepts a plain string.  This handles
     # structured values like arrays and objects whose only valid reading is
-    # non-string.
+    # non-string.  Only attempt JSON parsing when the value looks like an
+    # array or object (starts with ``[`` or ``{``); plain scalars such as
+    # "null", "true", or "42" must fall through to the type-specific paths
+    # below so that a non-nullable union like ``int | list[int]`` does not
+    # accidentally accept "null" as None.
+    # Note: ``oneOf`` schemas are not handled here; only ``anyOf`` is checked.
     if schema_type == "string" and "anyOf" in unwrapped:
         non_null = [s for s in unwrapped["anyOf"] if s.get("type") != "null"]
         has_string_branch = any(s.get("type") == "string" for s in non_null)
-        if not has_string_branch:
+        if not has_string_branch and raw[:1] in "[{":
             try:
                 return json.loads(raw)
             except json.JSONDecodeError:
