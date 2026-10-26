@@ -895,3 +895,73 @@ class TestNestedCallToolSpans:
         # The inner span descends from the outer span
         assert inner_span.parent is not None
         assert inner_span.parent.span_id == outer_span.context.span_id
+
+        # Each span carries component attributes for its own tool, not the
+        # other's. Before the fix the seam span was mutated in-place so the
+        # outer span ended up with the inner tool's component attrs.
+        assert outer_span.attributes is not None
+        assert inner_span.attributes is not None
+        assert outer_span.attributes.get("fastmcp.component.key") == "tool:outer@"
+        assert outer_span.attributes.get("gen_ai.tool.name") == "outer"
+        assert inner_span.attributes.get("fastmcp.component.key") == "tool:inner@"
+        assert inner_span.attributes.get("gen_ai.tool.name") == "inner"
+
+    async def test_nested_call_tool_ignores_inbound_meta_traceparent(
+        self, trace_exporter: InMemorySpanExporter
+    ):
+        """Inner span must be a child of the outer span even when the outer
+        request carries an inbound _meta traceparent (W3C distributed trace).
+
+        Regression guard: extract_trace_context already skips the _meta
+        traceparent when a valid span is active (so a live outer span wins over
+        the request's remote-caller context). If that guard were removed, the
+        non-seam server_span path would re-read _meta on the nested call and
+        parent the inner span to the remote caller, turning nested spans into
+        siblings.
+        """
+        mcp = FastMCP("test-server")
+
+        @mcp.tool
+        def inner() -> str:
+            return "inner result"
+
+        @mcp.tool
+        async def outer(ctx: Context) -> str:
+            await ctx.fastmcp.call_tool("inner", {})
+            return "outer result"
+
+        # Call via a Client so the client-telemetry layer injects a real
+        # traceparent into _meta, mirroring the distributed-trace case where
+        # an upstream caller's trace context arrives on the request.
+        async with Client(mcp) as client:
+            await client.call_tool("outer", {})
+
+        spans = trace_exporter.get_finished_spans()
+        tool_call_server_spans = {
+            s.name: s
+            for s in spans
+            if s.kind == SpanKind.SERVER
+            and s.attributes is not None
+            and s.attributes.get("mcp.method.name") == "tools/call"
+        }
+
+        outer_span = tool_call_server_spans.get("tools/call outer")
+        inner_span = tool_call_server_spans.get("tools/call inner")
+        assert outer_span is not None
+        assert inner_span is not None
+
+        assert outer_span.context is not None
+        assert inner_span.context is not None
+
+        # The inner span must be a child of the outer span, not a sibling
+        # parented directly to the inbound traceparent span. Without the
+        # extract_trace_context guard (is_valid check), this would fail
+        # because _get_parent_trace_context() would re-read _meta and return
+        # the client send span as the parent.
+        assert inner_span.parent is not None
+        assert inner_span.parent.span_id == outer_span.context.span_id
+
+        # The outer span's parent is the client send span (from _meta), not
+        # the inner span -- confirm the hierarchy is outer -> inner, not flat.
+        assert outer_span.parent is not None
+        assert outer_span.parent.span_id != inner_span.context.span_id
